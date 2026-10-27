@@ -1,2 +1,7 @@
 yt-dlp[default]>=2026.10.0
 openpyxl>=3.1.2
+faster-whisper>=1.0.0
+rapidfuzz>=3.0.0
+scenedetect>=0.6.0
+opencv-python>=4.8.0
+pytest>=7.0.0
