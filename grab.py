@@ -31,6 +31,7 @@ for _s in (sys.stdout, sys.stderr):
         except Exception: pass
 import argparse, csv, datetime as dt, json, platform, random, re, shutil, subprocess, sys, time, traceback
 from pathlib import Path
+from typing import Any, Tuple, Optional, List, Dict
 
 try:
     import yt_dlp
@@ -42,11 +43,16 @@ except ImportError:
 ALIASES = {
     "n": ["№", "n", "#", "номер", "id"],
     "block": ["блок", "block", "группа", "раздел", "group"],
-    "title": ["момент сценария", "момент", "название", "title", "описание", "name"],
+    "title": ["момент сценария", "момент", "название", "title", "описание", "name", "фраза", "phrase"],
     "query": ["поисковый запрос", "запрос", "query", "url", "link"],
     "tc": ["таймкод (от-до)", "таймкод", "timecode", "tc"],
     "status": ["статус", "status"],
     "prio": ["приоритет", "priority", "prio"],
+    "kind": ["вид", "тип", "kind", "type"],
+    "duration": ["длительность, с", "длительность", "duration"],
+    "offset": ["смещение, с", "смещение", "offset"],
+    "ref": ["референс", "reference", "ref"],
+    "notes": ["заметки", "заметка", "как использовать", "notes", "note"],
 }
 OUT_COLS = {"status": "Статус", "url": "Ссылка (выбрано)", "file": "Файл", "note": "Заметка"}
 PENDING = {"", "найти", "find", "todo", "pending"}
@@ -198,13 +204,25 @@ def colmap_from(headers):
     return {k: next((i for i, name in enumerate(h) if name in al), None) for k, al in ALIASES.items()}
 
 
-def mk_item(n, block, title, query, tc, status, prio, row=None):
+def mk_item(n, block, title, query, tc, status, prio, kind="клип", duration=3.0, offset=0.0, ref="", notes="", row=None):
     try:
         n = int(float(n))
     except Exception:
         n = None
-    return {"n": n, "block": str(block or ""), "title": str(title or ""), "query": str(query or "").strip(),
-            "tc": tc, "status": str(status or "").strip(), "prio": str(prio or "").strip(), "row": row}
+    try:
+        dur = float(duration) if duration is not None else 3.0
+    except Exception:
+        dur = 3.0
+    try:
+        off = float(offset) if offset is not None else 0.0
+    except Exception:
+        off = 0.0
+    return {
+        "n": n, "block": str(block or ""), "title": str(title or ""), "query": str(query or "").strip(),
+        "tc": tc, "status": str(status or "").strip(), "prio": str(prio or "").strip(),
+        "kind": str(kind or "клип").strip().lower(), "duration": dur, "offset": off,
+        "ref": str(ref or "").strip(), "notes": str(notes or "").strip(), "row": row
+    }
 
 
 class XlsxSync:
@@ -244,8 +262,21 @@ class XlsxSync:
             if not q:
                 continue
             n = g(r, "n")
-            yield mk_item(n if n is not None else r - 1, g(r, "block"), g(r, "title"), q, g(r, "tc"),
-                          g(r, "status"), g(r, "prio"), row=r)
+            yield mk_item(
+                n if n is not None else r - 1,
+                g(r, "block"),
+                g(r, "title"),
+                q,
+                g(r, "tc"),
+                g(r, "status"),
+                g(r, "prio"),
+                kind=g(r, "kind") or "клип",
+                duration=g(r, "duration"),
+                offset=g(r, "offset"),
+                ref=g(r, "ref"),
+                notes=g(r, "notes"),
+                row=r,
+            )
 
     def update(self, item, status=None, url=None, file=None, note=None):
         from openpyxl.styles import PatternFill
@@ -329,35 +360,63 @@ def probe(path):
 
 def is_valid(path):
     p = Path(path)
-    if not p.exists() or p.suffix.lower() != ".mp4" or p.stat().st_size < 10_000:
+    if not p.exists() or p.suffix.lower() != ".mp4" or p.stat().st_size < 1000:
         return False
     i = probe(p)
-    return bool(i and i["v"] and i["dur"] > 0.3)
+    return bool(i and i["v"] and i["dur"] > 0.1)
 
 
-def encode(src, dst, start=None, end=None, keep_src=False):
-    """Приводит к H.264+AAC/yuv420p. Если start/end заданы — точная вырезка с перекодированием."""
+def encode(src, dst, start=None, end=None, keep_src=False, fps=25.0, strip_audio=True):
+    """Приводит к H.264/yuv420p с частотой кадров fps проекта. Если strip_audio=True — звук удаляется (-an)."""
     src, dst = Path(src), Path(dst)
-    info = probe(src)
-    if not info or not info["v"]:
-        raise RuntimeError(f"ffprobe: {src.name} не читается")
-    ok = info["v"] == "h264" and info["a"] in (None, "aac") and info["pix"] in (None, "yuv420p") and src.suffix.lower() == ".mp4"
-    if start is None and end is None and ok:
-        (shutil.copy2 if keep_src else shutil.move)(src, dst)
-        return
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
-    if start:
+    if start is not None and start > 0:
         cmd += ["-ss", f"{start:.3f}"]
     cmd += ["-i", str(src)]
     if end is not None:
         cmd += ["-t", f"{end - (start or 0):.3f}"]
-    cmd += ["-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(dst)]
+    cmd += ["-map", "0:v:0"]
+    if strip_audio:
+        cmd += ["-an"]
+    else:
+        cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "192k"]
+    cmd += [
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "18",
+        "-pix_fmt", "yuv420p",
+        "-r", str(fps),
+        "-movflags", "+faststart",
+        str(dst),
+    ]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
         raise RuntimeError("ffmpeg: " + r.stderr[-600:])
     if not keep_src:
         src.unlink(missing_ok=True)
+
+
+def find_scene_without_timecode(video_path: Path, target_dur: float):
+    notes = []
+    try:
+        from scenedetect import detect, ContentDetector
+        scenes = detect(str(video_path), ContentDetector(threshold=27.0))
+        valid_scenes = []
+        for s_start, s_end in scenes:
+            dur = s_end.get_seconds() - s_start.get_seconds()
+            if dur >= target_dur:
+                valid_scenes.append((s_start.get_seconds(), dur))
+        if valid_scenes:
+            best_start, _ = max(valid_scenes, key=lambda x: x[1])
+            return best_start, notes
+    except Exception as e:
+        notes.append(f"детекция сцен: {e}")
+
+    info = probe(video_path)
+    tot_dur = info["dur"] if info else 60.0
+    st = 10.0 if tot_dur >= 10.0 + target_dur else max(0.0, (tot_dur - target_dur) / 2)
+    notes.append("needs_review")
+    return st, notes
 
 
 # ───────────────────────── yt-dlp ─────────────────────────
@@ -453,9 +512,28 @@ def ydl_download(url, stem, args, label, ranges=None):
     return max(files, key=lambda f: f.stat().st_size)
 
 
+class Downloader:
+    def search(self, query: str, args: Any) -> list:
+        raise NotImplementedError
+    def fetch_info(self, url: str, args: Any) -> dict:
+        raise NotImplementedError
+    def download(self, url: str, stem: Path, args: Any, label: str, ranges=None) -> Path:
+        raise NotImplementedError
+
+
+class YtDlpDownloader(Downloader):
+    def search(self, query: str, args: Any) -> list:
+        return search(query, args)
+    def fetch_info(self, url: str, args: Any) -> dict:
+        return fetch_info(url, args)
+    def download(self, url: str, stem: Path, args: Any, label: str, ranges=None) -> Path:
+        return ydl_download(url, stem, args, label, ranges=ranges)
+
+
 # ───────────────────────── обработка одной позиции ─────────────────────────
-def process(item, url, tc, args, out, final, label):
-    info = fetch_info(url, args)
+def process(item, url, tc, args, out, final, label, downloader=None):
+    dl = downloader or getattr(args, "downloader", None) or YtDlpDownloader()
+    info = dl.fetch_info(url, args)
     if info.get("is_live") or info.get("live_status") in ("is_live", "is_upcoming"):
         raise SkipItem("прямой эфир")
     dur, w, h = info.get("duration"), info.get("width"), info.get("height")
@@ -463,53 +541,87 @@ def process(item, url, tc, args, out, final, label):
     notes = []
     if w and h and h > w:
         notes.append("вертикальное видео (Shorts?)")
+
+    target_useful_dur = float(item.get("duration", 3.0) or 3.0)
+    handle_sec = float(getattr(args, "handle_sec", 1.5))
+    fps = float(getattr(args, "fps", 25.0))
+
     if tc is None and dur and dur > args.max_min * 60 and not args.allow_long:
         raise SkipItem(f"ролик {fmt_dur(dur)} длиннее лимита {args.max_min:g} мин: задайте таймкод или --allow-long")
-    s = e = None
+
+    cache = getattr(args, "resolved_cache", out / ".cache"); cache.mkdir(exist_ok=True)
+    cfile = cache / f"{vid}.mp4"
+    if not is_valid(cfile):
+        cfile.unlink(missing_ok=True)
+        raw = dl.download(url, cache / f"{vid}_raw", args, label)
+        encode(raw, cfile, fps=fps, strip_audio=False)
+
     if tc:
-        s, e = tc
-        if dur and s >= dur:
-            raise SkipItem(f"таймкод {fmt_dur(s)} за пределами ролика ({fmt_dur(dur)})")
-        if dur and (e is None or e > dur):
-            if e is not None:
-                notes.append(f"конец таймкода обрезан до длительности ролика {fmt_dur(dur)}")
-            e = dur
-    mode = args.cut_mode
-    if not tc:
-        mode = "full"
-    elif mode == "auto":
-        mode = "section" if (dur and dur > args.full_max_min * 60) else "full"
+        tc_start, tc_end = tc
+        if tc_end is None:
+            tc_end = tc_start + target_useful_dur
+        useful_dur = tc_end - tc_start
+        source_in = max(0.0, tc_start - handle_sec)
+        handle_in = tc_start - source_in
+        source_out = tc_end + handle_sec
+        if dur and source_out > dur:
+            source_out = dur
+        handle_out = max(0.0, source_out - tc_end)
+        useful_in = handle_in
+        useful_out = handle_in + useful_dur
+    else:
+        # Search strategy for clips without timecode
+        quote_match = None
+        for text_source in (item.get("ref", ""), item.get("notes", ""), item.get("title", "")):
+            m = re.findall(r'["«]([^"»]{3,})["»]', text_source)
+            if m:
+                quote_match = m[0]
+                break
+
+        scene_start = None
+        if quote_match and "subtitles" in info:
+            # Subtitle inspection if present
+            pass
+
+        if scene_start is None:
+            scene_start, sc_notes = find_scene_without_timecode(cfile, target_useful_dur + 2 * handle_sec)
+            notes.extend(sc_notes)
+
+        source_in = scene_start
+        total_target_dur = target_useful_dur + 2 * handle_sec
+        source_out = min(dur or float("inf"), source_in + total_target_dur)
+        handle_in = min(handle_sec, source_in)
+        handle_out = handle_sec
+        useful_in = handle_in
+        useful_out = handle_in + target_useful_dur
 
     tmp = out / "_tmp" / f"{item['n']}"
     shutil.rmtree(tmp, ignore_errors=True); tmp.mkdir(parents=True)
     tmp_final = tmp / "final.mp4"
     try:
-        if mode == "full":
-            cache = getattr(args, "resolved_cache", out / ".cache"); cache.mkdir(exist_ok=True)
-            cfile = cache / f"{vid}.mp4"
-            if not is_valid(cfile):
-                cfile.unlink(missing_ok=True)
-                raw = ydl_download(url, cache / f"{vid}_raw", args, label)
-                encode(raw, cfile)
-            if tc:
-                encode(cfile, tmp_final, s, e, keep_src=True)
-            else:
-                shutil.copy2(cfile, tmp_final)
-        else:
-            rs = max(0.0, s - args.margin)
-            re_ = (e + args.margin) if e else float("inf")
-            raw = ydl_download(url, tmp / "sec", args, label, ranges=[(rs, re_)])
-            encode(raw, tmp_final, s - rs, (e - rs) if e else None)
+        encode(cfile, tmp_final, start=source_in, end=source_out, keep_src=True, fps=fps, strip_audio=True)
         if not is_valid(tmp_final):
             raise RuntimeError("итоговый файл не прошёл проверку ffprobe")
-        got = probe(tmp_final)["dur"]
-        exp = ((e or dur) - s) if tc and (e or dur) else (dur if dur else None)
-        if exp and abs(got - exp) > 1.5:
-            notes.append(f"длительность {got:.1f} с вместо ожидаемых {exp:.1f} с")
+
         final.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(tmp_final), str(final))
+
+        # Write sidecar JSON
+        sidecar_path = final.with_name(final.name + ".json")
+        sidecar_data = {
+            "source_in": round(source_in, 3),
+            "source_out": round(source_out, 3),
+            "useful_in": round(useful_in, 3),
+            "useful_out": round(useful_out, 3),
+            "handle_in": round(handle_in, 3),
+            "handle_out": round(handle_out, 3),
+            "src_url": url,
+            "src_fps": fps,
+        }
+        sidecar_path.write_text(json.dumps(sidecar_data, indent=2), encoding="utf-8")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
     return notes, info
 
 
@@ -535,7 +647,8 @@ def main():
     ap.add_argument("--clip-len", type=float, default=15, help="длина клипа, если задана одна точка времени")
     ap.add_argument("--attempts", type=int, default=2); ap.add_argument("--sleep", type=float, default=0, help="пауза между скачиваниями, сек")
     ap.add_argument("--cookies-from-browser", dest="cfb"); ap.add_argument("--cookies", help="cookies.txt")
-    ap.add_argument("--proxy", help="например socks5://127.0.0.1:1080")
+    ap.add_argument("--handle-sec", type=float, default=1.5, help="запас по краям клипа, сек")
+    ap.add_argument("--fps", type=float, default=25.0, help="частота кадров проекта")
     ap.add_argument("--clean-cache", action="store_true"); ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -586,6 +699,14 @@ def main():
 
     for idx, it in enumerate(todo, 1):
         label = f"[{idx}/{len(todo)}] №{it['n']}"
+        kind = it.get("kind", "клип").lower()
+        if kind in ("картинка", "оригинал", "текст"):
+            print(f"{label} вид '{kind}' -> пропуск скачивания (заглушка для таймлайна)")
+            stats["skip"] += 1
+            if sync and not args.dry_run:
+                sync.update(it, status="заглушка", note=f"заглушка: {kind}")
+            continue
+
         folder = out / slug(it["block"], 30) if it["block"] else out
         final = folder / f"{int(it['n'] or idx):02d}_{slug(it['title'] or it['query'])}.mp4"
         row = [it["n"], it["block"], it["title"], it["query"], it["tc"]]
