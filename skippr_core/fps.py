@@ -55,3 +55,22 @@ def format_fcpxml_frame_duration(fps: float) -> str:
     """Formats frame duration for FCPXML <format> tag, e.g. '1/25s' or '1001/24000s'."""
     dur_frac = get_frame_duration(fps)
     return f"{dur_frac.numerator}/{dur_frac.denominator}s"
+
+
+def frames_to_timecode(frames: int, fps: float) -> str:
+    """
+    Converts integer frame count to non-drop frame SMPTE timecode HH:MM:SS:FF.
+    """
+    int_fps = int(round(fps))
+    if int_fps <= 0:
+        int_fps = 25
+    if frames < 0:
+        frames = 0
+    ff = frames % int_fps
+    total_seconds = frames // int_fps
+    ss = total_seconds % 60
+    total_minutes = total_seconds // 60
+    mm = total_minutes % 60
+    hh = total_minutes // 60
+    return f"{hh:02d}:{mm:02d}:{ss:02d}:{ff:02d}"
+
