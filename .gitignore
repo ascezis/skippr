@@ -1,0 +1,26 @@
+# Media & cache (футажи не храним в репозитории)
+clips/
+_cache/
+*.mp4
+*.m4a
+*.webm
+*.part
+*.ytdl
+*.mkv
+
+# Excel backups & lock-файлы
+~$*
+*.bak.xlsx
+*_results.xlsx
+
+# Python & Environment
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+env/
+
+# System
+Thumbs.db
+.DS_Store
