@@ -24,6 +24,11 @@ grab.py v4 — универсальный загрузчик клипов с You
   python grab.py clips.txt --out D:\\clips --proxy socks5://127.0.0.1:1080
 Выход: <out>/<Блок>/<NN>_<название>.mp4 — H.264 + AAC, yuv420p, faststart. Лог запуска: <out>/run_*.txt
 """
+import sys
+for _s in (sys.stdout, sys.stderr):
+    if _s and hasattr(_s, 'reconfigure'):
+        try: _s.reconfigure(encoding='utf-8', errors='replace')
+        except Exception: pass
 import argparse, csv, datetime as dt, json, platform, random, re, shutil, subprocess, sys, time, traceback
 from pathlib import Path
 
@@ -116,7 +121,7 @@ def make_hook(label):
 
 
 # ───────────────────────── таймкоды ─────────────────────────
-SEP = re.compile(r"\s*(?:\.\.|[-–—>→]|\bto\b|\bдо\b)\s*", re.I)
+SEP = re.compile(r"\s*(?:\.\.|[-–—>->]|\bto\b|\bдо\b)\s*", re.I)
 
 
 def parse_point(s):
@@ -136,12 +141,12 @@ def parse_point(s):
 
 
 def _clock_fix(h, m, s):
-    """Excel превращает «1:23» во время 01:23:00 → считаем как 1 мин 23 с."""
+    """Excel превращает «1:23» во время 01:23:00 -> считаем как 1 мин 23 с."""
     return (h * 60 + m) if s == 0 and h < 24 else (h * 3600 + m * 60 + s)
 
 
 def parse_tc(v, clip_len=15.0):
-    """→ (start, end|None) или None. end=None: до конца ролика."""
+    """-> (start, end|None) или None. end=None: до конца ролика."""
     if v is None or (isinstance(v, str) and v.strip() in ("", "—", "-")):
         return None
     if isinstance(v, dt.datetime):
@@ -480,7 +485,7 @@ def process(item, url, tc, args, out, final, label):
     tmp_final = tmp / "final.mp4"
     try:
         if mode == "full":
-            cache = out / "_cache"; cache.mkdir(exist_ok=True)
+            cache = getattr(args, "resolved_cache", out / ".cache"); cache.mkdir(exist_ok=True)
             cfile = cache / f"{vid}.mp4"
             if not is_valid(cfile):
                 cfile.unlink(missing_ok=True)
@@ -511,7 +516,9 @@ def process(item, url, tc, args, out, final, label):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("source", help="xlsx / csv / txt / ссылка / поисковый запрос")
-    ap.add_argument("--sheet", default="Монтажный лист"); ap.add_argument("--out", default="clips")
+    ap.add_argument("--sheet", default="Монтажный лист")
+    ap.add_argument("-o", "--out", help="папка выгрузки клипов (по умолчанию: clips/ рядом с исходным файлом)")
+    ap.add_argument("--cache-dir", help="папка кэша сырых видео (по умолчанию: .cache внутри папки выгрузки)")
     ap.add_argument("--status", help="брать только строки с этим статусом (по умолчанию: пусто/найти/ошибка…)")
     ap.add_argument("--redo", action="store_true", help="игнорировать статус, обработать все строки")
     ap.add_argument("--priority", help="например A или AB"); ap.add_argument("--only", help="номера: 5,9-14")
@@ -523,7 +530,7 @@ def main():
     ap.add_argument("--height", type=int, default=1080)
     ap.add_argument("--cut-mode", choices=["auto", "full", "section"], default="auto",
                     help="full: скачать целиком и точно вырезать; section: скачать только отрезок (экономит трафик у длинных)")
-    ap.add_argument("--full-max-min", type=float, default=30, help="auto: длиннее этого → section")
+    ap.add_argument("--full-max-min", type=float, default=30, help="auto: длиннее этого -> section")
     ap.add_argument("--margin", type=float, default=3, help="запас вокруг таймкода в режиме section, сек")
     ap.add_argument("--clip-len", type=float, default=15, help="длина клипа, если задана одна точка времени")
     ap.add_argument("--attempts", type=int, default=2); ap.add_argument("--sleep", type=float, default=0, help="пауза между скачиваниями, сек")
@@ -532,7 +539,17 @@ def main():
     ap.add_argument("--clean-cache", action="store_true"); ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
-    out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
+    if args.out:
+        out = Path(args.out)
+    else:
+        src_p = Path(args.source)
+        if src_p.is_file():
+            out = src_p.resolve().parent / "clips"
+        else:
+            out = Path("clips").resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    args.resolved_out = out
+    args.resolved_cache = Path(args.cache_dir) if args.cache_dir else (out / ".cache")
     run_log = out / f"run_{dt.datetime.now():%Y%m%d_%H%M%S}.txt"
     lf = open(run_log, "w", encoding="utf-8")
     sys.stdout, sys.stderr = Tee(sys.__stdout__, lf), Tee(sys.__stderr__, lf)
@@ -613,7 +630,7 @@ def main():
                     print(f"{label} сбой ({str(e)[:120]}), повтор через {wait} с")
                     time.sleep(wait)
             status, notes, info = result
-            print(f"{label} OK → {final}" + (f"   ⚠ {'; '.join(notes)}" if notes else ""))
+            print(f"{label} OK -> {final}" + (f"   ⚠ {'; '.join(notes)}" if notes else ""))
             stats["ok"] += 1
             title = info.get("title") or cand["title"]
             log.writerow(row + [cand["url"], title, fmt_dur(info.get("duration")), cand["chan"], str(final), "ok", "; ".join(notes)])
@@ -636,7 +653,8 @@ def main():
     logf.close()
     shutil.rmtree(out / "_tmp", ignore_errors=True)
     if args.clean_cache:
-        shutil.rmtree(out / "_cache", ignore_errors=True)
+        c_dir = getattr(args, "resolved_cache", out / ".cache")
+        shutil.rmtree(c_dir, ignore_errors=True)
     print(f"\nИтог: скачано {stats['ok']}, уже было {stats['skip']}, ошибок {len(stats['fail'])}")
     for n, m in stats["fail"]:
         print(f"  №{n}: {m}")
