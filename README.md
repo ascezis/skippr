@@ -139,6 +139,8 @@ python skippr.py export plan.json -o timeline.fcpxml --table montazhny_list.xlsx
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — детальная архитектура, описание модулей, структура данных и список изменений в `grab.py`.
 - [docs/DECISIONS.md](docs/DECISIONS.md) — реестр ключевых инженерных решений (FCPXML 1.9, квантование времени, обработка аудио, политики нехватки).
 - [docs/IMPORT_CHECK.md](docs/IMPORT_CHECK.md) — подробный чек-лист ручной проверки импорта в DaVinci Resolve Studio 20.
+- [docs/AI_CUE_SHEET_SPEC.md](docs/AI_CUE_SHEET_SPEC.md) — спецификация и готовый системный промпт для ИИ (Claude / ChatGPT) по генерации монтажного листа из текста сценария.
+
 
 ---
 
