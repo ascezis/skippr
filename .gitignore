@@ -24,3 +24,7 @@ env/
 # System
 Thumbs.db
 .DS_Store
+
+# Local developer notes
+EXPLORING.md
+
