@@ -54,6 +54,8 @@ pip install -r requirements.txt
 python skippr.py all montazhny_list.xlsx
 ```
 Флаги:
+- `--voiceover <файл>`: путь к файлу начитки (wav/mp3/flac).
+- `--normalize-lufs`: двухпроходная нормализация громкости озвучки под YouTube (-14 LUFS / -1.0 True Peak) перед монтажом.
 - `--dry-run`: симуляция работы без реального скачивания видео (проверяет таблицу, сценарий, таймлайн и генерирует отчёт).
 - `--force`: принудительный пересчёт кэша транскрибации Whisper и выравнивания.
 - `--only 1,3-5`: обработка только указанных строк таблицы.
@@ -61,6 +63,15 @@ python skippr.py all montazhny_list.xlsx
 - `-o <папка>`: целевая рабочая папка проекта.
 
 ---
+
+### 🎙️ Нормализация громкости озвучки (`prep_audio.py` / `skippr prep-audio`)
+```powershell
+python skippr.py prep-audio voiceover.wav
+```
+- Двухпроходный стандарт **EBU R128** под YouTube (**-14.0 LUFS**, True Peak **-1.0 dBFS**).
+- **Чистый линейный гейн (`linear=true`):** не пережимает динамику и не искажает частоты (сохраняет обработку из FL Studio / Reaper).
+- Никогда не перезаписывает исходник — сохраняет результат в `voiceover_norm.wav`.
+
 
 ## 🧩 Модули и пошаговый запуск
 
@@ -140,6 +151,7 @@ python skippr.py export plan.json -o timeline.fcpxml --table montazhny_list.xlsx
 - [docs/DECISIONS.md](docs/DECISIONS.md) — реестр ключевых инженерных решений (FCPXML 1.9, квантование времени, обработка аудио, политики нехватки).
 - [docs/IMPORT_CHECK.md](docs/IMPORT_CHECK.md) — подробный чек-лист ручной проверки импорта в DaVinci Resolve Studio 20.
 - [docs/AI_CUE_SHEET_SPEC.md](docs/AI_CUE_SHEET_SPEC.md) — спецификация и готовый системный промпт для ИИ (Claude / ChatGPT) по генерации монтажного листа из текста сценария.
+- [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md) — бэклог идей и архитектурных улучшений конвейера (бэкап полных исходников, пре-мастеринг аудио, дакинг, Web-интерфейс).
 
 
 ---

@@ -45,9 +45,16 @@ def find_clip_and_sidecar(
     ]
     matched_file = None
     for pat in patterns:
-        matches = list(clips_dir.glob(pat))
+        matches = [
+            m for m in clips_dir.glob(pat)
+            if not any(part.startswith(('_', '.')) for part in m.relative_to(clips_dir).parts)
+        ]
         if matches:
-            matched_file = matches[0]
+            with_sidecar = [
+                m for m in matches
+                if m.with_name(m.name + ".json").exists() or m.with_suffix(".json").exists()
+            ]
+            matched_file = with_sidecar[0] if with_sidecar else matches[0]
             break
 
     if not matched_file:

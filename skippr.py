@@ -29,6 +29,9 @@ from plan import run_plan
 from export_fcpxml import run_export
 
 
+from prep_audio import normalize_audio, print_audio_report
+
+
 def step_all(
     table_path: str,
     out_dir: str | None = None,
@@ -36,6 +39,8 @@ def step_all(
     force: bool = False,
     only: str | None = None,
     edl: bool = False,
+    voiceover: str | None = None,
+    normalize_lufs: bool = False,
 ):
     p_tab = Path(table_path)
     if not p_tab.exists():
@@ -43,6 +48,15 @@ def step_all(
 
     out = Path(out_dir) if out_dir else p_tab.parent
     out.mkdir(parents=True, exist_ok=True)
+
+    vo_path = Path(voiceover).resolve() if voiceover else None
+    if vo_path and normalize_lufs:
+        print("════════════════════════════════════════════════════════════════════════")
+        print("🎙️ skippr: Нормализация громкости озвучки перед монтажом (-14 LUFS)...")
+        print("════════════════════════════════════════════════════════════════════════\n")
+        norm_vo, stats = normalize_audio(vo_path)
+        print_audio_report(vo_path, norm_vo, stats)
+        vo_path = norm_vo
 
     print("════════════════════════════════════════════════════════════════════════")
     print(f"🎬 skippr: Запуск полного конвейера монтажа для {p_tab.name}")
@@ -58,7 +72,7 @@ def step_all(
 
     # 2. Выравнивание озвучки
     print("\n[2/5] 🎙️ Выравнивание фраз сценария со звуковой дорожкой...")
-    phrases_file = run_align(table_path=p_tab, out_dir=out, force=force)
+    phrases_file = run_align(table_path=p_tab, voiceover_path=vo_path, out_dir=out, force=force)
 
     # 3. Скачивание и нарезка клипов
     print("\n[3/5] ✂️ Сбор и нарезка видеоклипов...")
@@ -82,7 +96,7 @@ def step_all(
 
     # 5. Экспорт в DaVinci Resolve (FCPXML 1.9)
     print("\n[5/5] 🎞️ Экспорт таймлайна FCPXML и отчёта...")
-    xml_file, report_file = run_export(plan_path=plan_file, out_xml_path=out / "timeline.fcpxml", table_path=p_tab)
+    xml_file, report_file = run_export(plan_path=plan_file, out_xml_path=out / "timeline.fcpxml", table_path=p_tab, voiceover_path=vo_path)
 
     if edl:
         from export_edl import build_edl
@@ -101,7 +115,7 @@ def step_all(
 def main():
     # Backwards compatibility: if invoked directly with file or url without subcommand
     first_arg = sys.argv[1].lower() if len(sys.argv) > 1 else ""
-    known_commands = {"template", "validate", "align", "grab", "plan", "export", "all", "-h", "--help"}
+    known_commands = {"template", "validate", "align", "grab", "plan", "export", "all", "prep-audio", "-h", "--help"}
 
     if first_arg not in known_commands and not first_arg.startswith("-"):
         # Legacy direct grab call
@@ -113,6 +127,15 @@ def main():
         description="skippr — Automated Rough-Cut Assembly Pipeline for DaVinci Resolve Studio 20",
     )
     subparsers = parser.add_subparsers(dest="command")
+
+    # prep-audio
+    sub_aud = subparsers.add_parser("prep-audio", help="Двухпроходная нормализация громкости (EBU R128 -14 LUFS для YouTube)")
+    sub_aud.add_argument("audio", help="Исходный файл озвучки (wav/mp3/flac)")
+    sub_aud.add_argument("-o", "--output", help="Выходной файл (по умолчанию: <имя>_norm.<расширение>)")
+    sub_aud.add_argument("--lufs", type=float, default=-14.0, help="Целевой LUFS (по умолчанию -14.0)")
+    sub_aud.add_argument("--tp", type=float, default=-1.0, help="Максимальный True Peak (по умолчанию -1.0 dBFS)")
+    sub_aud.add_argument("--lra", type=float, default=11.0, help="Диапазон LRA (по умолчанию 11.0)")
+    sub_aud.add_argument("--nonlinear", action="store_true", help="Разрешить динамическую компрессию вместо чистого линейного гейна")
 
     # template
     sub_tpl = subparsers.add_parser("template", help="Создать пустой шаблон монтажного листа")
@@ -128,6 +151,7 @@ def main():
     sub_aln = subparsers.add_parser("align", help="Синхронизировать фразы таблицы со звуком озвучки")
     sub_aln.add_argument("table", help="Путь к таблице (xlsx)")
     sub_aln.add_argument("--voiceover", help="Файл озвучки (wav/mp3)")
+    sub_aln.add_argument("--normalize-lufs", action="store_true", help="Нормализовать аудио до -14 LUFS перед выравниванием")
     sub_aln.add_argument("--transcript", help="Предварительная расшифровка transcript.json")
     sub_aln.add_argument("-o", "--out", help="Папка выгрузки phrases.json")
     sub_aln.add_argument("--force", action="store_true")
@@ -143,7 +167,6 @@ def main():
     sub_grb.add_argument("--proxy", help="HTTP/SOCKS5 прокси")
     sub_grb.add_argument("--cookies-from-browser", dest="cfb")
     sub_grb.add_argument("--cookies", help="cookies.txt")
-
 
     # plan
     sub_pln = subparsers.add_parser("plan", help="Рассчитать план таймлайна (plan.json)")
@@ -164,6 +187,8 @@ def main():
     sub_all = subparsers.add_parser("all", help="Запустить полный конвейер (validate -> align -> grab -> plan -> export)")
     sub_all.add_argument("table", help="Путь к таблице (xlsx)")
     sub_all.add_argument("-o", "--out", help="Рабочая папка проекта")
+    sub_all.add_argument("--voiceover", help="Файл озвучки (wav/mp3)")
+    sub_all.add_argument("--normalize-lufs", action="store_true", help="Нормализовать аудио до -14 LUFS перед монтажом")
     sub_all.add_argument("--dry-run", action="store_true", help="Режим симуляции без загрузки видео")
     sub_all.add_argument("--force", action="store_true", help="Пересчитать существующие кэши")
     sub_all.add_argument("--only", help="Ограничить номерами строк: 1,3-5")
@@ -175,7 +200,17 @@ def main():
         parser.print_help()
         return
 
-    if args.command == "template":
+    if args.command == "prep-audio":
+        out, stats = normalize_audio(
+            args.audio,
+            output_path=args.output,
+            target_i=args.lufs,
+            target_tp=args.tp,
+            target_lra=args.lra,
+            linear=not args.nonlinear,
+        )
+        print_audio_report(Path(args.audio), out, stats)
+    elif args.command == "template":
         create_template(args.output)
         print(f"Шаблон создан: {args.output}")
     elif args.command == "validate":
@@ -183,7 +218,13 @@ def main():
         code = print_validation_report(errors)
         sys.exit(code)
     elif args.command == "align":
-        run_align(args.table, voiceover_path=args.voiceover, transcript_path=args.transcript, out_dir=args.out, force=args.force)
+        vo = args.voiceover
+        if vo and getattr(args, "normalize_lufs", False):
+            vo_p = Path(vo)
+            norm_vo, stats = normalize_audio(vo_p)
+            print_audio_report(vo_p, norm_vo, stats)
+            vo = str(norm_vo)
+        run_align(args.table, voiceover_path=vo, transcript_path=args.transcript, out_dir=args.out, force=args.force)
     elif args.command == "grab":
         # Pass through to grab.main()
         argv = ["grab.py", args.table]
@@ -208,7 +249,16 @@ def main():
             build_edl(Path(args.plan), table_path=Path(args.table) if args.table else None, out_path=edl_p)
             print(f"  ✓ EDL:      {edl_p.resolve()}")
     elif args.command == "all":
-        step_all(args.table, out_dir=args.out, dry_run=args.dry_run, force=args.force, only=args.only, edl=args.edl)
+        step_all(
+            args.table,
+            out_dir=args.out,
+            dry_run=args.dry_run,
+            force=args.force,
+            only=args.only,
+            edl=args.edl,
+            voiceover=getattr(args, "voiceover", None),
+            normalize_lufs=getattr(args, "normalize_lufs", False),
+        )
 
 
 
