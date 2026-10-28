@@ -137,8 +137,13 @@ def main():
     sub_grb.add_argument("table", help="Путь к таблице (xlsx)")
     sub_grb.add_argument("-o", "--out", help="Папка для клипов")
     sub_grb.add_argument("--dry-run", action="store_true")
+    sub_grb.add_argument("--redo", action="store_true", help="Перерезать/перекачать существующие клипы")
     sub_grb.add_argument("--only", help="Номера строк: 1,3-5")
     sub_grb.add_argument("--priority", help="Приоритет: A, B")
+    sub_grb.add_argument("--proxy", help="HTTP/SOCKS5 прокси")
+    sub_grb.add_argument("--cookies-from-browser", dest="cfb")
+    sub_grb.add_argument("--cookies", help="cookies.txt")
+
 
     # plan
     sub_pln = subparsers.add_parser("plan", help="Рассчитать план таймлайна (plan.json)")
@@ -186,8 +191,13 @@ def main():
         if args.dry_run: argv.append("--dry-run")
         if args.only: argv.extend(["--only", args.only])
         if args.priority: argv.extend(["--priority", args.priority])
+        if getattr(args, "redo", False): argv.append("--redo")
+        if getattr(args, "proxy", None): argv.extend(["--proxy", args.proxy])
+        if getattr(args, "cfb", None): argv.extend(["--cookies-from-browser", args.cfb])
+        if getattr(args, "cookies", None): argv.extend(["--cookies", args.cookies])
         sys.argv = argv
         grab.main()
+
     elif args.command == "plan":
         run_plan(args.table, phrases_path=args.phrases, clips_dir=args.clips, out_dir=args.out)
     elif args.command == "export":

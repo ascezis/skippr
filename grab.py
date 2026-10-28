@@ -424,13 +424,14 @@ def base_opts(args, verbose=False):
     o = {"quiet": True, "noprogress": True, "noplaylist": True, "logger": YLog(verbose), "verbose": verbose,
          "socket_timeout": 30, "retries": 10, "fragment_retries": 10, "extractor_retries": 3, "file_access_retries": 3,
          "retry_sleep_functions": {k: (lambda n: min(2 ** n, 60)) for k in ("http", "fragment", "extractor", "file_access")}}
-    if args.cfb:
+    if getattr(args, "cfb", None):
         o["cookiesfrombrowser"] = (args.cfb,)
-    if args.cookies:
+    if getattr(args, "cookies", None):
         o["cookiefile"] = args.cookies
-    if args.proxy:
+    if getattr(args, "proxy", None):
         o["proxy"] = args.proxy
     return o
+
 
 
 def search(query, args):
@@ -647,6 +648,7 @@ def main():
     ap.add_argument("--clip-len", type=float, default=15, help="длина клипа, если задана одна точка времени")
     ap.add_argument("--attempts", type=int, default=2); ap.add_argument("--sleep", type=float, default=0, help="пауза между скачиваниями, сек")
     ap.add_argument("--cookies-from-browser", dest="cfb"); ap.add_argument("--cookies", help="cookies.txt")
+    ap.add_argument("--proxy", help="HTTP/SOCKS5 прокси")
     ap.add_argument("--handle-sec", type=float, default=1.5, help="запас по краям клипа, сек")
     ap.add_argument("--fps", type=float, default=25.0, help="частота кадров проекта")
     ap.add_argument("--clean-cache", action="store_true"); ap.add_argument("--verbose", action="store_true")
@@ -662,7 +664,14 @@ def main():
             out = Path("clips").resolve()
     out.mkdir(parents=True, exist_ok=True)
     args.resolved_out = out
-    args.resolved_cache = Path(args.cache_dir) if args.cache_dir else (out / ".cache")
+    if args.cache_dir:
+        resolved_cache = Path(args.cache_dir)
+    elif (out / "_cache").exists():
+        resolved_cache = out / "_cache"
+    else:
+        resolved_cache = out / ".cache"
+    args.resolved_cache = resolved_cache
+
     run_log = out / f"run_{dt.datetime.now():%Y%m%d_%H%M%S}.txt"
     lf = open(run_log, "w", encoding="utf-8")
     sys.stdout, sys.stderr = Tee(sys.__stdout__, lf), Tee(sys.__stderr__, lf)
@@ -718,11 +727,12 @@ def main():
             log.writerow(row + ["", "", "", "", "", msg, ""]); logf.flush()
             if sync and not args.dry_run: sync.update(it, status=msg)
             continue
-        if is_valid(final):
+        if is_valid(final) and not getattr(args, "redo", False):
             print(f"{label} уже скачан: {final}")
             stats["skip"] += 1
             if sync and not args.dry_run: sync.update(it, status="скачано", file=str(final.resolve()))
             continue
+
         if final.exists():
             print(f"{label} файл повреждён, удаляю и качаю заново"); final.unlink()
         result = None
