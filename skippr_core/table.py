@@ -129,6 +129,7 @@ def load_table(
                     priority=str(val("Приоритет") or "B").strip().upper(),
                     status=str(val("Статус") or "найти").strip().lower(),
                     notes=str(val("Заметки") or "").strip(),
+                    file=str(val("Файл") or "").strip() or None,
                     row_idx=r_idx,
                 )
                 items.append(item)

@@ -34,11 +34,151 @@ def file_to_uri(file_path: str | Path) -> str:
     return p.as_uri()
 
 
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".gif"}
+
+
+def get_media_duration_frames(file_path: Path, fps: float) -> int:
+    """
+    Returns actual frame count for DaVinci Resolve FCPXML asset duration.
+    - Still images: 1 frame (Resolve expects 1 frame for still image assets).
+    - Video clips: actual frame count probed via cv2 / ffprobe.
+    """
+    ext = file_path.suffix.lower()
+    if ext in IMAGE_EXTS:
+        return 1
+
+    try:
+        import cv2
+        cap = cv2.VideoCapture(str(file_path))
+        if cap.isOpened():
+            frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.release()
+            if frames > 0:
+                return frames
+    except Exception:
+        pass
+
+    try:
+        import subprocess, json as _j
+        cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0",
+               "-show_entries", "stream=nb_frames,duration", "-of", "json", str(file_path)]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        if res.returncode == 0:
+            d = _j.loads(res.stdout)
+            streams = d.get("streams", [])
+            if streams:
+                st = streams[0]
+                nb = st.get("nb_frames")
+                if nb and str(nb).isdigit():
+                    return int(nb)
+                dur = st.get("duration")
+                if dur:
+                    return int(round(float(dur) * fps))
+    except Exception:
+        pass
+
+    return sec_to_frames(10.0, fps)
+
+
+def get_audio_duration_frames(audio_path: Path, fps: float) -> int:
+    """Returns duration in video frames for audio voiceover."""
+    ext = audio_path.suffix.lower()
+    if ext == ".wav":
+        try:
+            import wave
+            with wave.open(str(audio_path), "rb") as w:
+                frames = w.getnframes()
+                rate = w.getframerate()
+                if rate > 0:
+                    dur_sec = frames / float(rate)
+                    return int(round(dur_sec * fps))
+        except Exception:
+            pass
+
+    try:
+        import subprocess, json as _j
+        cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", str(audio_path)]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        if res.returncode == 0:
+            d = _j.loads(res.stdout)
+            dur = d.get("format", {}).get("duration")
+            if dur:
+                return int(round(float(dur) * fps))
+    except Exception:
+        pass
+
+    return sec_to_frames(30.0, fps)
+
+
+def resolve_clip_bounds(fpath: str, s_in: int, dur: int, fps: float) -> Tuple[int, int, int]:
+    """
+    Ensures source_in + duration never exceeds actual file frames.
+    Returns: (safe_s_in, safe_dur, shortage_frames)
+    - safe_s_in: adjusted in-point (shifted earlier if needed to fit dur)
+    - safe_dur: actual frames the video file can safely supply
+    - shortage_frames: leftover frames (if file is strictly shorter than dur)
+    """
+    p = Path(fpath)
+    if p.suffix.lower() in IMAGE_EXTS:
+        return 0, dur, 0
+    tot = get_media_duration_frames(p, fps)
+    if s_in + dur <= tot:
+        return s_in, dur, 0
+    if dur <= tot:
+        safe_in = max(0, tot - dur)
+        return safe_in, dur, 0
+    return 0, tot, dur - tot
+
+
+def num_to_alpha(n: int, length: int = 5) -> str:
+    """Converts an integer to a pure alphabetic string (e.g. 0 -> 'aaaaa', 1 -> 'aaaab')."""
+    res = []
+    for _ in range(length):
+        res.append(chr(ord('a') + (n % 26)))
+        n //= 26
+    return "".join(reversed(res))
+
+
+def ensure_safe_media_link(file_path: Path, media_dir: Optional[Path]) -> Path:
+    """
+    Creates a clean, short ASCII hardlink (or copy) for media files to avoid
+    DaVinci Resolve MAX_PATH / URI encoding buffer overflow (>250 chars) on Windows.
+    For still images, uses a pure alphabetic filename (no digits 0-9) so DaVinci
+    Resolve NEVER detects them as image sequences.
+    """
+    if not media_dir:
+        return file_path
+    try:
+        p = Path(file_path).resolve()
+        media_dir_resolved = media_dir.resolve()
+        if p.parent == media_dir_resolved:
+            return p
+        media_dir_resolved.mkdir(parents=True, exist_ok=True)
+        import hashlib, os, shutil
+        h = hashlib.md5(str(p).encode("utf-8")).hexdigest()[:10]
+        ext = p.suffix.lower()
+        if ext in IMAGE_EXTS:
+            alpha_h = h.translate(str.maketrans("0123456789", "ghijklmnop"))
+            clean_name = f"still_{alpha_h}{ext}"
+        else:
+            clean_name = f"vid_{h}{ext}"
+        link_path = media_dir_resolved / clean_name
+        if not link_path.exists():
+            try:
+                os.link(p, link_path)
+            except Exception:
+                shutil.copy2(p, link_path)
+        return link_path
+    except Exception:
+        return file_path
+
+
 def generate_fcpxml(
     plan_data: List[Dict[str, Any]],
     settings: ProjectSettings,
     voiceover_path: Optional[str | Path] = None,
     project_name: str = "Skippr Timeline",
+    media_dir: Optional[Path] = None,
 ) -> str:
     fps = settings.fps
     frame_dur_str = format_fcpxml_frame_duration(fps)
@@ -65,19 +205,14 @@ def generate_fcpxml(
     vo_duration_frames = 0
     if vo_p and vo_p.exists():
         vo_asset_id = "r_vo"
-        # Determine duration: check max clip end or probe
-        # Calculate rough duration from clips or default
-        max_clip_end = max(
-            (p["timeline_start_frame"] + p["timeline_duration_frame"] for p in plan_data),
-            default=sec_to_frames(30.0, fps),
-        )
-        vo_duration_frames = max_clip_end + sec_to_frames(5.0, fps)
+        vo_duration_frames = get_audio_duration_frames(vo_p, fps)
+        safe_vo_path = ensure_safe_media_link(vo_p, media_dir)
         ET.SubElement(
             resources,
             "asset",
             id=vo_asset_id,
             name=vo_p.name,
-            src=file_to_uri(vo_p),
+            src=file_to_uri(safe_vo_path),
             start="0s",
             duration=format_fcpxml_time(vo_duration_frames, fps),
             hasAudio="1",
@@ -85,7 +220,14 @@ def generate_fcpxml(
             audioChannels="2",
         )
 
-    # Asset for each unique video clip
+    file_max_out: Dict[str, int] = {}
+    for p in plan_data:
+        fpath = p.get("file")
+        if fpath:
+            needed = p.get("source_in_frame", 0) + p.get("timeline_duration_frame", 0)
+            file_max_out[fpath] = max(file_max_out.get(fpath, 0), needed)
+
+    # Asset for each unique video clip / image
     clip_assets: Dict[str, str] = {}
     asset_counter = 2
     for p in plan_data:
@@ -96,19 +238,23 @@ def generate_fcpxml(
                 aid = f"r_{asset_counter}"
                 asset_counter += 1
                 clip_assets[fpath] = aid
-                # Clip duration in asset
-                dur_f = p["source_out_frame"] + sec_to_frames(10.0, fps)
+                if p_file.suffix.lower() in IMAGE_EXTS:
+                    # Still images must have asset duration matching or exceeding the needed duration
+                    clip_dur_f = max(file_max_out.get(fpath, sec_to_frames(10.0, fps)), 1)
+                else:
+                    clip_dur_f = max(get_media_duration_frames(p_file, fps), file_max_out.get(fpath, 0))
+                safe_clip_path = ensure_safe_media_link(p_file, media_dir)
                 ET.SubElement(
                     resources,
                     "asset",
                     id=aid,
-                    name=p_file.name,
-                    src=file_to_uri(p_file),
+                    name=p.get("orig_name") or p_file.name,
+                    src=file_to_uri(safe_clip_path),
                     format="r1",
                     start="0s",
-                    duration=format_fcpxml_time(dur_f, fps),
+                    duration=format_fcpxml_time(clip_dur_f, fps),
                     hasVideo="1",
-                    hasAudio="0",  # audio stripped
+                    hasAudio="0",
                 )
 
     # Total timeline duration
@@ -175,16 +321,19 @@ def generate_fcpxml(
         aid = clip_assets.get(fpath) if fpath else None
 
         if aid:
-            # Asset clip
-            clip_name = Path(fpath).name
+            # Asset clip with boundary protection against Media Offline
+            clip_name = p.get("orig_name") or Path(fpath).name
+            s_in_orig = p["source_in_frame"]
+            safe_in, safe_dur, shortage = resolve_clip_bounds(fpath, s_in_orig, dur_frame, fps)
+
             clip_el = ET.SubElement(
                 spine,
                 "asset-clip",
                 ref=aid,
                 name=clip_name,
                 offset=format_fcpxml_time(current_frame, fps),
-                duration=format_fcpxml_time(dur_frame, fps),
-                start=format_fcpxml_time(p["source_in_frame"], fps),
+                duration=format_fcpxml_time(safe_dur, fps),
+                start=format_fcpxml_time(safe_in, fps),
             )
             if first_spine_elem is None:
                 first_spine_elem = clip_el
@@ -195,7 +344,7 @@ def generate_fcpxml(
             ET.SubElement(
                 clip_el,
                 "marker",
-                start=format_fcpxml_time(p["source_in_frame"], fps),
+                start=format_fcpxml_time(safe_in, fps),
                 duration=format_fcpxml_time(1, fps),
                 value=m_val,
                 completed="0",
@@ -207,24 +356,45 @@ def generate_fcpxml(
                 ET.SubElement(
                     clip_el,
                     "chapter-marker",
-                    start=format_fcpxml_time(p["source_in_frame"], fps),
+                    start=format_fcpxml_time(safe_in, fps),
                     duration=format_fcpxml_time(1, fps),
                     value=f"Блок: {block_name}",
                     posterOffset="0s",
                 )
 
             # 3. Warning flags marker
-            flags = p.get("flags", [])
+            flags = list(p.get("flags", []))
+            if shortage > 0 and "shortage" not in flags:
+                flags.append("shortage")
             if flags:
                 flag_str = ", ".join(flags)
                 ET.SubElement(
                     clip_el,
                     "marker",
-                    start=format_fcpxml_time(p["source_in_frame"], fps),
+                    start=format_fcpxml_time(safe_in, fps),
                     duration=format_fcpxml_time(1, fps),
                     value=f"[{flag_str.upper()}] №{p['n']}",
                     completed="0",
                     note=flag_str,
+                )
+
+            # 4. If genuine shortage, fill remainder with Gap so timeline doesn't drift or go offline
+            if shortage > 0:
+                shortage_el = ET.SubElement(
+                    spine,
+                    "gap",
+                    name=f"[Нехватка: {shortage}к] №{p['n']}",
+                    offset=format_fcpxml_time(current_frame + safe_dur, fps),
+                    duration=format_fcpxml_time(shortage, fps),
+                    start="0s",
+                )
+                ET.SubElement(
+                    shortage_el,
+                    "marker",
+                    start="0s",
+                    duration=format_fcpxml_time(1, fps),
+                    value=f"[SHORTAGE] №{p['n']} нехватка {shortage/fps:.2f}с",
+                    completed="0",
                 )
         else:
             # Placeholder or missing clip
@@ -308,20 +478,22 @@ def generate_fcpxml(
         dur_f = p["timeline_duration_frame"]
 
         if aid:
+            s_in_orig = p["source_in_frame"]
+            safe_in, safe_dur, _ = resolve_clip_bounds(fpath, s_in_orig, dur_f, fps)
             clip_el = ET.SubElement(
                 first_spine_elem,
                 "asset-clip",
                 lane="1",
                 ref=aid,
-                name=f"[V2] {Path(fpath).name}",
+                name=f"[V2] {p.get('orig_name') or Path(fpath).name}",
                 offset=format_fcpxml_time(st_f, fps),
-                duration=format_fcpxml_time(dur_f, fps),
-                start=format_fcpxml_time(p["source_in_frame"], fps),
+                duration=format_fcpxml_time(safe_dur, fps),
+                start=format_fcpxml_time(safe_in, fps),
             )
             ET.SubElement(
                 clip_el,
                 "marker",
-                start=format_fcpxml_time(p["source_in_frame"], fps),
+                start=format_fcpxml_time(safe_in, fps),
                 duration=format_fcpxml_time(1, fps),
                 value=f"[V2] №{p['n']}: {p.get('phrase', '')}",
                 completed="0",
@@ -440,15 +612,63 @@ def run_export(
         settings = load_settings(table_path)
 
     vo = voiceover_path or settings.voiceover_path
-    if vo and not Path(vo).is_absolute() and not Path(vo).exists():
-        cand = p_plan.parent / vo
-        if cand.exists():
-            vo = cand
+    if vo:
+        p_vo = Path(vo)
+        if not p_vo.is_file():
+            candidates = [
+                p_plan.parent / vo,
+                p_plan.parent.parent / "audio" / p_vo.name,
+                p_plan.parent.parent / "audio" / "voiceover.wav",
+                p_plan.parent / "audio" / p_vo.name,
+                p_plan.parent / "audio" / "voiceover.wav",
+                p_vo,
+            ]
+            for c in candidates:
+                if c.is_file():
+                    vo = c.resolve()
+                    break
+        else:
+            vo = p_vo.resolve()
 
     xml_p = Path(out_xml_path) if out_xml_path else (p_plan.parent / "timeline.fcpxml")
     xml_p.parent.mkdir(parents=True, exist_ok=True)
 
-    xml_content = generate_fcpxml(plan_data, settings, voiceover_path=vo, project_name="Skippr Rough Cut")
+    media_dir = xml_p.parent / "_media"
+    media_dir.mkdir(parents=True, exist_ok=True)
+
+    linked_files = {}
+    plan_data_linked = []
+    for it in plan_data:
+        it_copy = dict(it)
+        fpath = it.get("file")
+        if fpath:
+            p = Path(fpath)
+            if p.exists():
+                it_copy["orig_name"] = p.name
+                if fpath not in linked_files:
+                    ext = p.suffix.lower()
+                    if ext in IMAGE_EXTS:
+                        clean_name = f"still_{num_to_alpha(len(linked_files))}{ext}"
+                    else:
+                        clean_name = f"vid_{len(linked_files):03d}{ext}"
+                    link_path = media_dir / clean_name
+                    if not link_path.exists():
+                        try:
+                            import os
+                            os.link(p, link_path)
+                        except Exception:
+                            import shutil
+                            shutil.copy2(p, link_path)
+                    linked_files[fpath] = link_path
+                it_copy["file"] = str(linked_files[fpath].resolve())
+        plan_data_linked.append(it_copy)
+
+    xml_content = generate_fcpxml(
+        plan_data_linked,
+        settings,
+        voiceover_path=vo,
+        project_name="Skippr Rough Cut",
+    )
     validate_xml_string(xml_content)
 
     xml_p.write_text(xml_content, encoding="utf-8")

@@ -40,15 +40,15 @@ def frames_to_sec(frames: int, fps: float) -> float:
 
 def format_fcpxml_time(frames: int, fps: float) -> str:
     """
-    Formats a frame count into FCPXML rational time string, e.g. '125/25s' or '0s'.
-    For 25 fps: 10 frames -> '10/25s'.
+    Formats a frame count into FCPXML rational time string matching sequence timebase.
+    Never reduces denominator to 1 (e.g. returns '175/25s', NOT '7/1s').
     """
     if frames == 0:
         return "0s"
     dur_frac = get_frame_duration(fps)
-    # total duration = frames * (dur_frac.numerator / dur_frac.denominator)
-    total_frac = fractions.Fraction(frames * dur_frac.numerator, dur_frac.denominator)
-    return f"{total_frac.numerator}/{total_frac.denominator}s"
+    num = frames * dur_frac.numerator
+    den = dur_frac.denominator
+    return f"{num}/{den}s"
 
 
 def format_fcpxml_frame_duration(fps: float) -> str:

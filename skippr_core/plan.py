@@ -23,10 +23,12 @@ for _s in (sys.stdout, sys.stderr):
         except Exception:
             pass
 
+import re
 from skippr_core.table import load_table
 from skippr_core.models import RowItem, PlanItem, SidecarData
 from skippr_core.config import ProjectSettings, load_settings
 from skippr_core.fps import sec_to_frames, frames_to_sec
+from skippr_core.cards import generate_storyboard_card
 
 
 def find_clip_and_sidecar(
@@ -36,26 +38,45 @@ def find_clip_and_sidecar(
     if not clips_dir.exists():
         return None, None
 
-    # Search in block folder or globally by №
-    patterns = [
-        f"{item.block}/{item.n:02d}_*.mp4",
-        f"{item.block}/{item.n}_*.mp4",
-        f"**/{item.n:02d}_*.mp4",
-        f"**/{item.n}_*.mp4",
-    ]
+    valid_exts = {".mp4", ".mov", ".mkv", ".jpg", ".jpeg", ".png", ".webp"}
     matched_file = None
-    for pat in patterns:
-        matches = [
-            m for m in clips_dir.glob(pat)
-            if not any(part.startswith(('_', '.')) for part in m.relative_to(clips_dir).parts)
-        ]
-        if matches:
-            with_sidecar = [
-                m for m in matches
-                if m.with_name(m.name + ".json").exists() or m.with_suffix(".json").exists()
+    if item.file:
+        p = Path(item.file)
+        if p.exists() and p.suffix.lower() in valid_exts:
+            matched_file = p
+
+    if not matched_file:
+        safe_block = re.sub(r"[^\w\-]+", "_", item.block).strip("_")
+        exts = ["jpg", "jpeg", "png", "webp", "mp4"] if "картин" in item.kind else ["mp4", "mov", "mkv", "jpg", "jpeg", "png", "webp"]
+        patterns = []
+        # 1. Exact 3-digit in block folder
+        for ext in exts:
+            patterns.append(f"{safe_block}/{item.n:03d}_*.{ext}")
+            patterns.append(f"{item.block}/{item.n:03d}_*.{ext}")
+        # 2. 2-digit in block folder
+        for ext in exts:
+            patterns.append(f"{safe_block}/{item.n:02d}_*.{ext}")
+            patterns.append(f"{item.block}/{item.n:02d}_*.{ext}")
+        # 3. Global 3-digit across all folders
+        for ext in exts:
+            patterns.append(f"**/{item.n:03d}_*.{ext}")
+        # 4. Global 2-digit (only for video clips to avoid cross-block meme collisions)
+        if item.kind == "клип":
+            for ext in exts:
+                patterns.append(f"**/{item.n:02d}_*.{ext}")
+                patterns.append(f"**/{item.n}_*.{ext}")
+        for pat in patterns:
+            matches = [
+                m for m in clips_dir.glob(pat)
+                if not any(part.startswith(('_', '.')) for part in m.relative_to(clips_dir).parts)
             ]
-            matched_file = with_sidecar[0] if with_sidecar else matches[0]
-            break
+            if matches:
+                with_sidecar = [
+                    m for m in matches
+                    if m.with_name(m.name + ".json").exists() or m.with_suffix(".json").exists()
+                ]
+                matched_file = with_sidecar[0] if with_sidecar else matches[0]
+                break
 
     if not matched_file:
         return None, None
@@ -90,6 +111,8 @@ def build_plan(
     phrases_data: List[Dict[str, Any]],
     clips_dir: Path,
     settings: ProjectSettings,
+    zero_gap: Optional[bool] = None,
+    total_vo_sec: Optional[float] = None,
 ) -> List[PlanItem]:
     fps = settings.fps
     anchors_map = {int(p["n"]): p for p in phrases_data}
@@ -114,17 +137,68 @@ def build_plan(
 
         # 3. Handle by kind
         if it.kind != "клип":
-            # Placeholder (картинка, оригинал, текст)
+            # Check if a downloaded image or media file already exists
+            media_file, sidecar = find_clip_and_sidecar(it, clips_dir)
             dur_frames = sec_to_frames(it.duration, fps)
             dur_sec = frames_to_sec(dur_frames, fps)
             flags = list(p_flags)
+
+            if media_file:
+                # Real downloaded image or file exists!
+                plan_item = PlanItem(
+                    n=it.n,
+                    block=it.block,
+                    kind="картинка" if "картин" in it.kind else it.kind,
+                    file=str(media_file.resolve()),
+                    track=track,
+                    timeline_start=t_start_sec,
+                    timeline_duration=dur_sec,
+                    timeline_start_frame=t_start_frame,
+                    timeline_duration_frame=dur_frames,
+                    source_in=0.0,
+                    source_out=dur_sec,
+                    source_in_frame=0,
+                    source_out_frame=dur_frames,
+                    speed=1.0,
+                    flags=flags,
+                    phrase=it.phrase,
+                    reference=it.reference,
+                )
+                raw_plan.append(plan_item)
+                continue
+
+            # Otherwise, fall back to visual storyboard card
             flags.append(f"placeholder_{it.kind}")
+
+            # Generate / reuse visual storyboard card (unique slug prevents DaVinci sequence grouping)
+            safe_block = re.sub(r"[^\w\-]+", "_", it.block).strip("_")
+            safe_title = re.sub(r"[^\w\-]+", "_", it.reference or it.phrase or it.kind).strip("_")[:35]
+            card_dir = clips_dir / "_cards" / safe_block
+            card_path = card_dir / f"{it.n:03d}_card_{safe_title}.png"
+            if not card_path.exists():
+                # Check if old card exists or generate new one
+                old_cand = card_dir / f"{it.n:03d}_card.png"
+                if old_cand.exists():
+                    try:
+                        old_cand.rename(card_path)
+                    except Exception:
+                        card_path = old_cand
+                if not card_path.exists():
+                    generate_storyboard_card(
+                        n=it.n,
+                        block=it.block,
+                        kind=it.kind,
+                        phrase=it.phrase,
+                        reference=it.reference,
+                        query=it.query,
+                        out_path=card_path,
+                    )
 
             plan_item = PlanItem(
                 n=it.n,
                 block=it.block,
                 kind="placeholder",
-                file=None,
+                file=str(card_path.resolve()),
                 track=track,
                 timeline_start=t_start_sec,
                 timeline_duration=dur_sec,
@@ -260,6 +334,49 @@ def build_plan(
                     if "overlap" not in curr_item.flags:
                         curr_item.flags.append("overlap")
 
+    # 6. Continuous Zero-Gap Fill on V1 primary storyline
+    should_zero_gap = zero_gap if zero_gap is not None else (
+        getattr(settings, "zero_gap", False) or "zero_gap" in settings.shortage_policy
+    )
+
+    v1_items = [p for p in raw_plan if p.track == "V1"]
+    v1_items.sort(key=lambda x: x.timeline_start_frame)
+
+    if should_zero_gap and v1_items:
+        # Snap start of first item to 0.0 if within first 3 seconds
+        if 0 < v1_items[0].timeline_start_frame <= sec_to_frames(3.0, fps):
+            v1_items[0].timeline_duration_frame += v1_items[0].timeline_start_frame
+            v1_items[0].timeline_duration = frames_to_sec(v1_items[0].timeline_duration_frame, fps)
+            v1_items[0].timeline_start_frame = 0
+            v1_items[0].timeline_start = 0.0
+
+        for i in range(len(v1_items) - 1):
+            curr_item = v1_items[i]
+            next_item = v1_items[i + 1]
+            curr_end_frame = curr_item.timeline_start_frame + curr_item.timeline_duration_frame
+            gap_f = next_item.timeline_start_frame - curr_end_frame
+            if gap_f > 0:
+                curr_item.timeline_duration_frame += gap_f
+                curr_item.timeline_duration = frames_to_sec(curr_item.timeline_duration_frame, fps)
+                new_source_dur = curr_item.timeline_duration * curr_item.speed
+                curr_item.source_out = curr_item.source_in + new_source_dur
+                curr_item.source_out_frame = sec_to_frames(curr_item.source_out, fps)
+                if "gap_filled" not in curr_item.flags:
+                    curr_item.flags.append("gap_filled")
+
+        # Snap last item to total voiceover duration if known
+        if total_vo_sec is not None:
+            total_vo_frames = sec_to_frames(total_vo_sec, fps)
+            last_v1 = v1_items[-1]
+            last_end = last_v1.timeline_start_frame + last_v1.timeline_duration_frame
+            if last_end < total_vo_frames:
+                gap_tail = total_vo_frames - last_end
+                last_v1.timeline_duration_frame += gap_tail
+                last_v1.timeline_duration = frames_to_sec(last_v1.timeline_duration_frame, fps)
+                new_source_dur = last_v1.timeline_duration * last_v1.speed
+                last_v1.source_out = last_v1.source_in + new_source_dur
+                last_v1.source_out_frame = sec_to_frames(last_v1.source_out, fps)
+
     # Sort final plan by timeline_start_frame, then track
     raw_plan.sort(key=lambda x: (x.timeline_start_frame, 0 if x.track == "V1" else 1))
     return raw_plan
@@ -295,6 +412,8 @@ def run_plan(
     phrases_path: Optional[str | Path] = None,
     clips_dir: Optional[str | Path] = None,
     out_dir: Optional[str | Path] = None,
+    zero_gap: bool = True,
+    voiceover_path: Optional[str | Path] = None,
 ) -> Path:
     tab_p = Path(table_path)
     items, settings, _ = load_table(tab_p)
@@ -314,7 +433,22 @@ def run_plan(
     if not c_dir.exists():
         c_dir = tab_p.parent / "clips"
 
-    plan = build_plan(items, phrases_data, c_dir, settings)
+    vo_cand = Path(voiceover_path) if voiceover_path else (out / "audio" / "voiceover.wav")
+    if not vo_cand.exists():
+        vo_cand = tab_p.parent / "audio" / "voiceover.wav"
+    if not vo_cand.exists():
+        vo_cand = tab_p.parent / "voiceover.wav"
+
+    total_vo_sec = None
+    if vo_cand.exists():
+        try:
+            import wave
+            with wave.open(str(vo_cand), "rb") as wf:
+                total_vo_sec = wf.getnframes() / float(wf.getframerate())
+        except Exception:
+            pass
+
+    plan = build_plan(items, phrases_data, c_dir, settings, zero_gap=zero_gap, total_vo_sec=total_vo_sec)
 
     plan_file = out / "plan.json"
     plan_file.write_text(json.dumps(plan_to_dict(plan), ensure_ascii=False, indent=2), encoding="utf-8")

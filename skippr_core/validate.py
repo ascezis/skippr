@@ -24,7 +24,7 @@ for _s in (sys.stdout, sys.stderr):
 from skippr_core.table import load_table
 from skippr_core.text import normalize_text
 from skippr_core.models import RowItem
-from grab import parse_tc
+from skippr_core.grab import parse_tc
 
 VALID_KINDS = {"клип", "картинка", "оригинал", "текст"}
 VALID_PRIORITIES = {"A", "B", "C"}

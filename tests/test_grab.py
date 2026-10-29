@@ -2,7 +2,7 @@ import pytest
 import subprocess
 import json
 from pathlib import Path
-from grab import Downloader, process, probe
+from skippr_core.grab import Downloader, process, probe
 
 
 class MockDownloader(Downloader):

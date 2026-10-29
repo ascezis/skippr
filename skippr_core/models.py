@@ -16,6 +16,7 @@ class RowItem:
     priority: str = "B"  # A / B / C
     status: str = "найти"  # найти / скачано / ошибка / пропуск
     notes: str = ""
+    file: Optional[str] = None
     row_idx: Optional[int] = None
     raw_dict: Dict[str, Any] = field(default_factory=dict)
 

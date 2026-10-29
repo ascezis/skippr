@@ -11,8 +11,9 @@ Features:
 """
 import argparse
 import json
-from pathlib import Path
+import os
 import sys
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
 for _s in (sys.stdout, sys.stderr):
@@ -21,6 +22,23 @@ for _s in (sys.stdout, sys.stderr):
             _s.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
+
+
+def _setup_windows_cuda_dlls():
+    """Adds pip-installed nvidia CUDA/cuDNN DLL directories to search path on Windows."""
+    if sys.platform == "win32":
+        site_packages = Path(sys.executable).parent / "Lib" / "site-packages"
+        for sub in ["cublas", "cudnn", "cuda_runtime"]:
+            p = site_packages / "nvidia" / sub / "bin"
+            if p.exists():
+                try:
+                    os.add_dll_directory(str(p))
+                except Exception:
+                    pass
+                os.environ["PATH"] = str(p) + os.pathsep + os.environ.get("PATH", "")
+
+
+_setup_windows_cuda_dlls()
 
 from skippr_core.table import load_table
 from skippr_core.text import normalize_text, tokenize_text
@@ -175,32 +193,36 @@ def align_phrases(
 
         p_len = len(phrase_tokens)
         matched = False
+        search_horizon_sec = 90.0
+        max_search_time = last_anchor_end + search_horizon_sec
 
-        # 1. Exact match search starting from current_word_idx
+        # 1. Exact match search starting from current_word_idx within horizon
         for i in range(current_word_idx, len(norm_words) - p_len + 1):
+            st_cand = norm_words[i]["start"]
+            if st_cand < last_anchor_end - 0.2:
+                continue
+            if st_cand > max_search_time:
+                break
             window = [norm_words[i + k]["norm"] for k in range(p_len)]
             if window == phrase_tokens:
-                st = norm_words[i]["start"]
+                st = max(last_anchor_end, st_cand)
                 en = norm_words[i + p_len - 1]["end"]
-                # Must be monotonic
-                if st >= last_anchor_end - 0.2:  # allow slight sub-word tolerance
-                    st = max(last_anchor_end, st)
-                    anchors.append(PhraseAnchor(
-                        n=it.n,
-                        anchor_start=round(st, 3),
-                        anchor_end=round(en, 3),
-                        confidence=1.0,
-                        method="exact",
-                    ))
-                    last_anchor_end = max(last_anchor_end, en)
-                    current_word_idx = i + p_len
-                    matched = True
-                    break
+                anchors.append(PhraseAnchor(
+                    n=it.n,
+                    anchor_start=round(st, 3),
+                    anchor_end=round(en, 3),
+                    confidence=1.0,
+                    method="exact",
+                ))
+                last_anchor_end = max(last_anchor_end, en)
+                current_word_idx = i + p_len
+                matched = True
+                break
 
         if matched:
             continue
 
-        # 2. Fuzzy match search using sliding window
+        # 2. Fuzzy match search using sliding window within horizon
         target_str = " ".join(phrase_tokens)
         best_score = 0.0
         best_indices = None
@@ -212,6 +234,8 @@ def align_phrases(
             w_start_time = norm_words[i]["start"]
             if w_start_time < last_anchor_end - 0.2:
                 continue
+            if w_start_time > max_search_time:
+                break
 
             for w_size in range(min_win, max_win + 1):
                 if i + w_size > len(norm_words):
@@ -327,11 +351,32 @@ def run_align(
     over_c = sum(1 for a in anchors if a.method == "override")
 
     print(f"\nВыравнивание завершено: {len(anchors)} позиций")
-    print(f"  Точных совпадений:   {exact_c}")
-    print(f"  Нечётких (fuzzy):    {fuzzy_c}")
-    print(f"  Переопределений:     {over_c}")
-    print(f"  Требуют проверки:    {fail_c}")
-    print(f"Результат сохранён: {phrases_file.resolve()}")
+    print(f"  • Точных совпадений:   {exact_c}")
+    print(f"  • Нечётких (fuzzy):    {fuzzy_c}")
+    print(f"  • Переопределений:     {over_c}")
+    print(f"  • Требуют проверки:    {fail_c}")
+
+    item_by_n = {it.n: it for it in items}
+
+    if fail_c > 0:
+        print("\n⚠️ Внимание! Следующие фразы из таблицы НЕ найдены в аудиозаписи:")
+        for a in anchors:
+            if a.method == "failed":
+                it = item_by_n.get(a.n)
+                phrase = it.phrase if it else ""
+                block = f"[{it.block}] " if it else ""
+                print(f"  ❌ №{a.n:02d} {block}\"{phrase}\" (расчётное место: ~{a.anchor_start:.1f}с)")
+
+    low_conf = [a for a in anchors if a.method == "fuzzy" and a.confidence < 0.75]
+    if low_conf:
+        print("\n🔍 Фразы с нечётким совпадением (проверьте формулировку в таблице):")
+        for a in low_conf:
+            it = item_by_n.get(a.n)
+            phrase = it.phrase if it else ""
+            block = f"[{it.block}] " if it else ""
+            print(f"  ⚠️ №{a.n:02d} {block}[уверенность: {a.confidence*100:.0f}%] \"{phrase}\" (~{a.anchor_start:.1f}с)")
+
+    print(f"\nРезультат сохранён: {phrases_file.resolve()}")
     return phrases_file
 
 

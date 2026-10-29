@@ -1,7 +1,7 @@
 import pytest
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from export_fcpxml import generate_fcpxml, file_to_uri, validate_xml_string
+from skippr_core.export_fcpxml import generate_fcpxml, file_to_uri, validate_xml_string
 from skippr_core.config import ProjectSettings
 
 

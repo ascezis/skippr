@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from plan import build_plan
+from skippr_core.plan import build_plan
 from skippr_core.models import RowItem, SidecarData
 from skippr_core.config import ProjectSettings
 

@@ -21,15 +21,13 @@ for _s in (sys.stdout, sys.stderr):
         except Exception:
             pass
 
-import grab
-from make_template import create_template
-from validate import validate_cue_sheet, print_validation_report
-from align import run_align
-from plan import run_plan
-from export_fcpxml import run_export
-
-
-from prep_audio import normalize_audio, print_audio_report
+from skippr_core import grab
+from skippr_core.make_template import create_template
+from skippr_core.validate import validate_cue_sheet, print_validation_report
+from skippr_core.align import run_align
+from skippr_core.plan import run_plan
+from skippr_core.export_fcpxml import run_export
+from skippr_core.prep_audio import normalize_audio, print_audio_report
 
 
 def step_all(
@@ -41,6 +39,7 @@ def step_all(
     edl: bool = False,
     voiceover: str | None = None,
     normalize_lufs: bool = False,
+    resolve: bool = False,
 ):
     p_tab = Path(table_path)
     if not p_tab.exists():
@@ -99,10 +98,22 @@ def step_all(
     xml_file, report_file = run_export(plan_path=plan_file, out_xml_path=out / "timeline.fcpxml", table_path=p_tab, voiceover_path=vo_path)
 
     if edl:
-        from export_edl import build_edl
+        from skippr_core.export_edl import build_edl
         edl_file = out / "timeline.edl"
         build_edl(plan_path=plan_file, table_path=p_tab, out_path=edl_file)
         print(f"   ✓ Резервный таймлайн EDL:        {edl_file.resolve()}")
+
+    if resolve:
+        print("\n════════════════════════════════════════════════════════════════════════")
+        print("🚀 [Resolve] Отправка таймлайна напрямую в DaVinci Resolve Studio...")
+        print("════════════════════════════════════════════════════════════════════════")
+        from skippr_core.resolve import push_to_resolve, ResolveConnectionError
+        try:
+            push_to_resolve(xml_file, plan_path=plan_file)
+        except ResolveConnectionError as e:
+            print(f"\n⚠️  Не удалось подключиться к DaVinci Resolve: {e}")
+        except Exception as e:
+            print(f"\n⚠️  Ошибка при импорте в DaVinci Resolve: {e}")
 
     print("\n════════════════════════════════════════════════════════════════════════")
     print("🎉 Конвейер успешно завершён!")
@@ -115,7 +126,7 @@ def step_all(
 def main():
     # Backwards compatibility: if invoked directly with file or url without subcommand
     first_arg = sys.argv[1].lower() if len(sys.argv) > 1 else ""
-    known_commands = {"template", "validate", "align", "grab", "plan", "export", "all", "prep-audio", "-h", "--help"}
+    known_commands = {"template", "validate", "align", "grab", "images", "plan", "export", "resolve", "all", "prep-audio", "-h", "--help"}
 
     if first_arg not in known_commands and not first_arg.startswith("-"):
         # Legacy direct grab call
@@ -168,6 +179,16 @@ def main():
     sub_grb.add_argument("--cookies-from-browser", dest="cfb")
     sub_grb.add_argument("--cookies", help="cookies.txt")
 
+    # images
+    sub_img = subparsers.add_parser("images", help="Автоматический поиск и скачивание картинок по поисковым запросам монтажного листа")
+    sub_img.add_argument("table", nargs="?", default="montazhny_list_100pct.xlsx", help="Путь к таблице (xlsx)")
+    sub_img.add_argument("-o", "--out", default="clips", help="Папка для сохранения (по умолчанию clips)")
+    sub_img.add_argument("--block", help="Фильтр по названию блока (например, 'Вступление')")
+    sub_img.add_argument("--only", help="Фильтр по номерам строк (например, '5,9,15' или '1-20')")
+    sub_img.add_argument("--force", action="store_true", help="Перекачивать даже существующие файлы")
+    sub_img.add_argument("--no-ambient", action="store_true", help="Не применять 1080p ambient blur для не-16:9 картинок")
+    sub_img.add_argument("--dry-run", action="store_true", help="Показать план без скачивания")
+
     # plan
     sub_pln = subparsers.add_parser("plan", help="Рассчитать план таймлайна (plan.json)")
     sub_pln.add_argument("table", help="Путь к таблице (xlsx)")
@@ -183,6 +204,16 @@ def main():
     sub_exp.add_argument("--voiceover", help="Файл озвучки")
     sub_exp.add_argument("--edl", action="store_true", help="Также экспортировать резервный timeline.edl")
 
+    # resolve
+    sub_res = subparsers.add_parser("resolve", help="Импортировать таймлайн FCPXML напрямую в DaVinci Resolve Studio 20")
+    sub_res.add_argument("fcpxml", nargs="?", default="timeline.fcpxml", help="Путь к timeline.fcpxml (по умолчанию: timeline.fcpxml)")
+    sub_res.add_argument("--plan", help="Путь к plan.json (для расстановки маркеров и метаданных)")
+    sub_res.add_argument("--project", help="Имя проекта в DaVinci Resolve")
+    sub_res.add_argument("--timeline", help="Имя создаваемого таймлайна в Resolve")
+    sub_res.add_argument("--no-bins", action="store_true", help="Не раскладывать клипы по бинам")
+    sub_res.add_argument("--no-colors", action="store_true", help="Не раскрашивать клипы на таймлайне")
+    sub_res.add_argument("--no-markers", action="store_true", help="Не расставлять маркеры глав на таймлайне")
+
     # all
     sub_all = subparsers.add_parser("all", help="Запустить полный конвейер (validate -> align -> grab -> plan -> export)")
     sub_all.add_argument("table", help="Путь к таблице (xlsx)")
@@ -193,6 +224,7 @@ def main():
     sub_all.add_argument("--force", action="store_true", help="Пересчитать существующие кэши")
     sub_all.add_argument("--only", help="Ограничить номерами строк: 1,3-5")
     sub_all.add_argument("--edl", action="store_true", help="Также экспортировать резервный timeline.edl")
+    sub_all.add_argument("--resolve", action="store_true", help="Автоматически отправить готовый таймлайн в DaVinci Resolve Studio")
 
     args = parser.parse_args()
 
@@ -239,15 +271,54 @@ def main():
         sys.argv = argv
         grab.main()
 
+    elif args.command == "images":
+        from skippr_core.images import download_images
+        t_path = Path(args.table)
+        if not t_path.exists():
+            alt = Path("C:/Users/azis/Desktop/ALL_FOLDERS/CrackedMachines/BDFL/montage/montazhny_list_100pct.xlsx")
+            if alt.exists():
+                t_path = alt
+        download_images(
+            table_path=t_path,
+            clips_dir=args.out,
+            block=args.block,
+            only=args.only,
+            force=args.force,
+            ambient=not args.no_ambient,
+            dry_run=args.dry_run,
+        )
     elif args.command == "plan":
         run_plan(args.table, phrases_path=args.phrases, clips_dir=args.clips, out_dir=args.out)
     elif args.command == "export":
         xml_p, _ = run_export(args.plan, out_xml_path=args.out, table_path=args.table, voiceover_path=args.voiceover)
         if args.edl:
-            from export_edl import build_edl
+            from skippr_core.export_edl import build_edl
             edl_p = xml_p.parent / "timeline.edl"
             build_edl(Path(args.plan), table_path=Path(args.table) if args.table else None, out_path=edl_p)
             print(f"  ✓ EDL:      {edl_p.resolve()}")
+    elif args.command == "resolve":
+        from skippr_core.resolve import push_to_resolve, ResolveConnectionError
+        xml_p = Path(args.fcpxml)
+        if not xml_p.exists():
+            alt = Path("C:/Users/azis/Desktop/ALL_FOLDERS/CrackedMachines/BDFL/montage/timeline.fcpxml")
+            if alt.exists():
+                xml_p = alt
+        if not xml_p.exists():
+            sys.exit(f"Файл таймлайна не найден: {xml_p}")
+        try:
+            push_to_resolve(
+                fcpxml_path=xml_p,
+                plan_path=args.plan,
+                project_name=args.project,
+                timeline_name=args.timeline,
+                organize_bins=not args.no_bins,
+                colorize=not args.no_colors,
+                markers=not args.no_markers,
+            )
+        except ResolveConnectionError as e:
+            sys.exit(f"\n❌ {e}")
+        except Exception as e:
+            sys.exit(f"\n❌ Ошибка импорта в DaVinci Resolve: {e}")
     elif args.command == "all":
         step_all(
             args.table,
@@ -258,6 +329,7 @@ def main():
             edl=args.edl,
             voiceover=getattr(args, "voiceover", None),
             normalize_lufs=getattr(args, "normalize_lufs", False),
+            resolve=getattr(args, "resolve", False),
         )
 
 

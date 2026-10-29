@@ -1,8 +1,8 @@
 import pytest
 import openpyxl
 from pathlib import Path
-from make_template import create_template
-from validate import validate_cue_sheet
+from skippr_core.make_template import create_template
+from skippr_core.validate import validate_cue_sheet
 from skippr_core.table import load_table
 
 

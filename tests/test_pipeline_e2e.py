@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import openpyxl
 
-from make_template import create_template
+from skippr_core.make_template import create_template
 from skippr_core.table import NEW_COLUMNS
 from skippr import step_all
 

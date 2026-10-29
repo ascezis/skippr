@@ -2,7 +2,7 @@ import subprocess
 import pytest
 from pathlib import Path
 
-from prep_audio import measure_loudness, normalize_audio
+from skippr_core.prep_audio import measure_loudness, normalize_audio
 
 
 @pytest.fixture

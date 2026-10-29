@@ -1,5 +1,5 @@
 import pytest
-from align import align_phrases
+from skippr_core.align import align_phrases
 from skippr_core.models import RowItem
 
 

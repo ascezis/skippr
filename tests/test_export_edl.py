@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from export_edl import build_edl
+from skippr_core.export_edl import build_edl
 from skippr_core.config import ProjectSettings
 
 
